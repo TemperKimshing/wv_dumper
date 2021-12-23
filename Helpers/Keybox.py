@@ -42,7 +42,12 @@ class Keybox:
         device_id = keybox['device_id']
         device_token = keybox['device_token']
         device_key = keybox['device_key']
-        key_box = bytes.fromhex(device_id) + bytes.fromhex(device_key) + bytes.fromhex(device_token) + b'kbox'
+        key_box = (
+            bytes.fromhex(device_id)
+            + bytes.fromhex(device_key)
+            + bytes.fromhex(device_token)
+            + b'kbox'
+        )
         crc = crc32_mpeg(key_box, len(key_box))
         key_box += struct.pack('>I', crc)
         key_box += keybox['security_level'].encode()
@@ -50,19 +55,23 @@ class Keybox:
 
     def __parse(self):
         self.device_id = self.__keybox[0:32]
+
         # this is the aes key
         self.device_key = self.__keybox[32:48]
         self.device_token = self.__keybox[48:120]
         self.keybox_tag = self.__keybox[120:124]
         self.crc32 = struct.unpack('>I', self.__keybox[124:128])[0]
         self.crc32_raw = hexlify(self.__keybox[124:128])
+
         # this is optional, most likely not required
         self.level_tag = self.__keybox[128:132]
         self.flags = struct.unpack(">L", self.__keybox[48:120][0:4])[0]
         self.version = struct.unpack(">I", self.__keybox[48:52])[0]
         self.system_id = struct.unpack(">I", self.__keybox[52:56])[0]
+
         # or unique_id as in wv pdf, encrypted by pre-provisioning key
         self.provisioning_id = self.__keybox[56:72]
+
         # encrypted with unique id, contains device key, device key hash, and flags
         self.encrypted_bits = self.__keybox[72:120]
 

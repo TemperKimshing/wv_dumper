@@ -1,10 +1,12 @@
 import os
 import json
+import logging
+
+from pathlib import Path
 from Crypto.PublicKey import RSA
 from google.protobuf import message
-import logging
-from Helpers.Keybox import Keybox
-from Helpers.wv_proto2_pb2 import SignedLicenseRequest
+from .Keybox import Keybox
+from .wv_proto2_pb2 import SignedLicenseRequest
 
 
 class Scan:
@@ -13,6 +15,12 @@ class Scan:
         self.KEY_DUMP_LOC = 'keydump/'
         self.device_name = device_name
         self.saved_keys = {}
+
+        self.key_dumps = Path('key_dumps')
+        self.license_request_fname = 'license_request.bin'
+        self.client_id_blob_fname = 'device_client_id_blob.bin'
+        self.private_key_fname = 'device_private_key.pem'
+
         self.frida_script = open('Helpers/script.js', 'r').read()
         self.device = {
             'device_id': None,
@@ -36,17 +44,22 @@ class Scan:
         root.ParseFromString(k['id'])
         cid = root.Msg.ClientId
         system_id = cid.Token._DeviceCertificate.SystemId
-        save_dir = os.path.join('key_dumps', f'{self.device_name}/private_keys/{system_id}/{str(k["key"].n)[:10]}')
 
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
+        save_dir = self.key_dumps.joinpath(
+            f'{self.device_name.replace(" ", "-")}-{system_id}',
+            f'{str(k["key"].n)[:10]}'
+        )
+        save_dir.mkdir(exist_ok=True, parents=True)
 
-        with open(os.path.join(save_dir, 'client_id.bin'), 'wb+') as writer:
-            writer.write(cid.SerializeToString())
+        client_id_blob_file = save_dir / self.client_id_blob_fname
+        with client_id_blob_file.open('wb+') as wb:
+            wb.write(cid.SerializeToString())
 
-        with open(os.path.join(save_dir, 'private_key.pem'), 'wb+') as writer:
-            writer.write(k['key'].exportKey('PEM'))
-        self.logger.info('Key pairs saved at ' + save_dir)
+        private_key_file = save_dir / self.private_key_fname
+        with private_key_file.open('wb+') as wb:
+            wb.write(k['key'].exportKey('PEM'))
+
+        self.logger.info(f'Key pairs saved to: {save_dir}')
 
     def on_message(self, msg, data):
         try:
@@ -63,25 +76,16 @@ class Scan:
                 self.logger.debug('processing device token')
                 self.device_token_message(data)
             elif msg['payload'] == 'security_level':
-                tag = data.decode()
-                if tag == 'L1':
-                    self.device['security_level'] = 'LVL1'
-                else:
-                    self.device['security_level'] = 'LVL3'
+                lvl = '1' if data.decode() == 'L1' else '3'
+                self.device['security_level'] = f'LVL{lvl}'
             elif msg['payload'] == 'aes_key':
                 self.aes_key_message(data)
             elif msg['payload'] == 'message':
                 payload = json.loads(data.decode())
-                self.logger.debug(
-                    json.dumps(
-                        payload,
-                        indent=4
-                    )
-                )
+                self.logger.debug(json.dumps(payload, indent=4))
             elif msg['payload'] == 'message_info':
                 self.logger.info(data.decode())
-
-        except:
+        except Exception:
             self.logger.error('unable to process the message')
             self.logger.error(msg)
             self.logger.error(data)
@@ -98,22 +102,25 @@ class Scan:
                         self.export_key(cur)
                 else:
                     self.saved_keys[key.n] = {'key': key}
-            except:
+            except Exception:
                 self.logger.error('unable to load private key')
                 self.logger.error(data)
                 pass
-        except:
+        except Exception:
             self.logger.error('payload of type priv failed')
             self.logger.error(private_key_message)
 
     def license_request_message(self, data):
-        with open('license_request.bin', 'wb+') as f:
+        with Path(self.license_request_fname).open('wb+') as f:
             f.write(data)
+
         root = SignedLicenseRequest()
+
         try:
             root.ParseFromString(data)
         except message.DecodeError:
             return
+
         try:
             key = RSA.importKey(root.Msg.ClientId.Token._DeviceCertificate.PublicKey)
             cur = self.saved_keys.get(key.n, {})
@@ -130,7 +137,9 @@ class Scan:
     def device_id_message(self, data_buffer):
         if not self.device['device_id']:
             self.device['device_id'] = data_buffer.hex()
-        if self.device['device_id'] and self.device['device_token'] and self.device['device_key']:
+        if (self.device['device_id']
+                and self.device['device_token']
+                and self.device['device_key']):
             self.save_key_box()
 
     def device_token_message(self, data_buffer):
@@ -150,11 +159,12 @@ class Scan:
         script = process.create_script(self.frida_script)
         script.load()
         loaded = []
+
         try:
             for lib in self.widevine_libraries:
                 try:
                     loaded.append(script.exports.widevinelibrary(lib))
-                except:
+                except Exception:
                     pass
         finally:
             process.detach()
@@ -170,18 +180,25 @@ class Scan:
 
     def save_key_box(self):
         try:
-            if self.device['device_id'] is not None and self.device['device_token'] is not None:
+            if (self.device['device_id'] is not None
+                    and self.device['device_token'] is not None):
+
                 self.logger.info('saving key box')
+
                 keybox = Keybox(self.device)
-                box = os.path.join('key_dumps', f'{self.device_name}/key_boxes/{keybox.system_id}')
-                self.logger.debug(f'saving to {box}')
-                if not os.path.exists(box):
-                    os.makedirs(box)
-                with open(os.path.join(box, f'{keybox.system_id}.bin'), 'wb') as writer:
-                    writer.write(keybox.get_keybox())
-                with open(os.path.join(box, f'{keybox.system_id}.json'), 'w') as writer:
-                    writer.write(keybox.__repr__())
-                self.logger.info(f'saved keybox to {box}')
+
+                box = self.key_dumps / f'{self.device_name}/key_boxes/{keybox.system_id}'
+                box.mkdir(exist_ok=True, parents=True)
+
+                keybox_bin = box / f'{keybox.system_id}.bin'
+                keybox_json = box / f'{keybox.system_id}.json'
+
+                self.logger.info(f'saving keybox bin to {keybox_bin}')
+
+                keybox_bin.write_bytes(keybox.get_keybox())
+                keybox_json.write_text(keybox.__repr__())
+
+                self.logger.info(f'keybox has been saved to: {box}')
         except Exception as error:
             self.logger.error('unable to save keybox')
             self.logger.error(error)
