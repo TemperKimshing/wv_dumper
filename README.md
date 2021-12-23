@@ -2,6 +2,12 @@
 
 Dumper is a Frida script to dump L3 CDMs from any Android device.
 
+## Changelogs:
+[2021.12.23]
+- Automatically start "bitmovin.com/demos/drm" from your device after the "Hooks Completed". (Required chrome browser and adb)
+- And some minor changes
+---
+
 ## Dependencies
 
 Use pip to install the dependencies:
