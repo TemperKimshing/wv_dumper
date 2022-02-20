@@ -150,8 +150,8 @@ function Hooker(lib, process_name) {
                 GetLevel3_RewrapDeviceRSAKey(module_address, process_name);
             } else if (exp.name === 'AES_unwrap_key') {
                 AES_unwrap_key(module_address, process_name)
-            } else if (containsFunction(exp.name, exp.address)) {
-                polorucp(module_address, process_name);
+            } else if (/^[a-z]+$/.test(exp.name)) { // stupid but kinda works
+                polorucp(module_address, process_name, exp.name);
             } else if (exp.name.includes('UsePrivacyMode')) {
                 UsePrivacyMode(module_address, process_name);
             } else if (exp.name === 'CdmInfo') {
@@ -329,7 +329,7 @@ function CdmInfo(address, process_name) {
     });
 }
 
-function polorucp(address, process_name) {
+function polorucp(address, process_name, exp_name) {
     Interceptor.attach(ptr(address), {
        onEnter: function(args) {
            if (!args[6].isNull()) {
@@ -340,6 +340,7 @@ function polorucp(address, process_name) {
                    if (view[0] === 0x30 && view[1] === 0x82) {
                        const data = {
                            from: process_name,
+                           function_name: exp_name,
                            data: 'Captured Private Key'
                        };
                        sender_payload(data);
